@@ -38,10 +38,10 @@ pub struct SimulationSummaryAndTx {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssetChange {
-    pub from: String,
-    pub to: String,
-    pub amount: String,
-    pub token_info: TokenInfo,
+    #[serde(default)] pub from: Option<String>,
+    #[serde(default)] pub to: Option<String>,
+    #[serde(default)] pub amount: Option<String>,
+    #[serde(default)] pub token_info: Option<TokenInfo>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ pub struct SimulationSection {
 pub struct TransactionSection {
     #[serde(default)] pub from: String,
     #[serde(default)] pub to: String,
-    #[serde(default)] pub gas_price: String,
+    #[serde(default)] pub gas_price: serde_json::Value,
     #[serde(default)] pub gas_used: Option<u128>,
     #[serde(default)] pub value: String,
     #[serde(default)] pub transaction_info: TransactionInfo,
@@ -80,7 +80,7 @@ pub struct TransactionSection {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TransactionInfo {
-    #[serde(default)] pub asset_changes: Vec<AssetChange>,
+    #[serde(default)] pub asset_changes: Option<Vec<AssetChange>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -204,10 +204,10 @@ impl TenderlySimulator {
             )));
         }
 
-        let result: SimulationResult = res
-            .json()
-            .await
-            .map_err(|e| TenderlyError::InvalidResponse(e.to_string()))?;
+        // Decode carefully to surface server response on errors
+        let text = res.text().await.map_err(|e| TenderlyError::InvalidResponse(e.to_string()))?;
+        let result: SimulationResult = serde_json::from_str(&text)
+            .map_err(|e| TenderlyError::InvalidResponse(format!("{} | body={}", e, text)))?;
         self.last_simulation = Some(result.clone());
 
         let summary = self.get_simulation_summary_from(&result, wallet_address);
@@ -282,7 +282,14 @@ impl TenderlySimulator {
         let uuid = sim.simulation.id.clone();
 
         let (assets_in, assets_out) = if let Some(addr) = wallet_address {
-            let (ins, outs) = Self::wallet_changes(&sim.transaction.transaction_info.asset_changes, addr);
+            let empty: Vec<AssetChange> = Vec::new();
+            let changes_ref: &Vec<AssetChange> = sim
+                .transaction
+                .transaction_info
+                .asset_changes
+                .as_ref()
+                .unwrap_or(&empty);
+            let (ins, outs) = Self::wallet_changes(changes_ref, addr);
             (Some(ins), Some(outs))
         } else {
             (None, None)
@@ -296,11 +303,15 @@ impl TenderlySimulator {
         let mut assets_in = Vec::new();
         let mut assets_out = Vec::new();
         for ch in all.iter() {
-            if ch.to.to_ascii_lowercase() == addr {
-                assets_in.push(ch.clone());
+            if let Some(t) = ch.to.as_ref() {
+                if t.to_ascii_lowercase() == addr {
+                    assets_in.push(ch.clone());
+                }
             }
-            if ch.from.to_ascii_lowercase() == addr {
-                assets_out.push(ch.clone());
+            if let Some(f) = ch.from.as_ref() {
+                if f.to_ascii_lowercase() == addr {
+                    assets_out.push(ch.clone());
+                }
             }
         }
         (assets_in, assets_out)
