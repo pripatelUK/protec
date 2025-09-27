@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
+import QRCode from 'react-qr-code'
 
 type PairingStartResponse = {
   pairing_code: string
@@ -58,10 +59,15 @@ export default function App() {
           <code>{resp.pairing_code}</code>
           <p style={{ marginTop: 8 }}>Scan in mobile app or send this code to it.</p>
           <h3>QR</h3>
-          <div style={{ border: '1px dashed #888', padding: 12 }}>
-            <small>QR data:</small>
-            <div>
-              <code>{resp.qr_data}</code>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+            <div style={{ background: 'white', padding: 8 }}>
+              <QRCode value={resp.qr_data} size={160} />
+            </div>
+            <div style={{ border: '1px dashed #888', padding: 12 }}>
+              <small>QR data:</small>
+              <div>
+                <code>{resp.qr_data}</code>
+              </div>
             </div>
           </div>
         </div>
