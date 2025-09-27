@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub struct PairingState {
     pub pending: Arc<DashMap<String, PairingRequest>>, // pairing_code -> request
     pub channels: Arc<DashMap<String, broadcast::Sender<PairingEvent>>>,
+    pub sessions: Arc<DashMap<String, String>>, // session_id -> pairing_code
 }
 
 impl PairingState {
@@ -17,6 +18,7 @@ impl PairingState {
         Self {
             pending: Arc::new(DashMap::new()),
             channels: Arc::new(DashMap::new()),
+            sessions: Arc::new(DashMap::new()),
         }
     }
 
@@ -27,6 +29,10 @@ impl PairingState {
         let (tx, _rx) = broadcast::channel(16);
         self.channels.insert(code.to_string(), tx.clone());
         tx
+    }
+
+    pub fn has_session(&self, session_id: &str) -> bool {
+        self.sessions.contains_key(session_id)
     }
 }
 
@@ -114,6 +120,13 @@ pub async fn get_pairing_status(
             let _ = tx.send(PairingEvent::Expired);
             drop(req);
             state.pending.remove(&pairing_code);
+            // also remove any session index entries pointing to this code
+            let code = pairing_code.clone();
+            for kv in state.sessions.iter() {
+                if kv.value() == &code {
+                    state.sessions.remove(kv.key());
+                }
+            }
             return Json(PairingStatusResponse {
                 status: PairingStatusKind::Expired,
                 session_id: None,
@@ -314,6 +327,9 @@ pub async fn complete_pair(
 
         let tx = state.channel_for(&code);
         let _ = tx.send(PairingEvent::Paired { session_id: session_id.clone(), rpc_endpoint: rpc_endpoint.clone() });
+
+        // index session -> code
+        state.sessions.insert(session_id.clone(), code.clone());
 
         println!(
             "[api] POST /api/pair code={code} device_id={did} -> paired session_id={sid}",

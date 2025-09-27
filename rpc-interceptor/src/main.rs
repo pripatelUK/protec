@@ -27,6 +27,7 @@ async fn main() {
     let rpc_state = Arc::new(RpcAppState {
         rpc: RpcConfig { upstream_url },
         http: reqwest::Client::new(),
+        pairing: pairing_state.clone(),
     });
 
     let pairing_router = Router::new()

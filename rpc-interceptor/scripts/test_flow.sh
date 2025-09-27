@@ -57,6 +57,17 @@ $CURL_BIN -sS -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}' \
   "$RPC_URL" | $JQ_BIN .
 
+log "RPC invalid session must be rejected (401)"
+INVALID_URL="$BASE_URL/rpc/invalid-session-id"
+HTTP_CODE=$($CURL_BIN -sS -o /dev/null -w "%{http_code}" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":99,"method":"eth_chainId","params":[]}' \
+  "$INVALID_URL")
+echo "  http_code=$HTTP_CODE"
+if [[ "$HTTP_CODE" != "401" ]]; then
+  echo "Expected 401 for invalid session, got $HTTP_CODE" >&2
+  exit 1
+fi
+
 log "OK"
 
 
