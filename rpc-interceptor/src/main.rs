@@ -8,6 +8,7 @@ use axum::http::Method;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::{
+    env,
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -15,7 +16,7 @@ use std::{
 use tokio::net::TcpListener;
 use tokio::{sync::broadcast, time::timeout};
 use uuid::Uuid;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{Any, CorsLayer};
 
 #[tokio::main]
 async fn main() {
@@ -30,11 +31,15 @@ async fn main() {
         .route("/api/pair", post(complete_pair))
         .with_state(pairing_state)
         .layer(
-            CorsLayer::permissive()
+            CorsLayer::new()
+                .allow_origin(Any)
                 .allow_methods([Method::GET, Method::POST])
+                .allow_headers(Any),
         );
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port: u16 = env::var("PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
+    let addr: SocketAddr = format!("{}:{}", host, port).parse().expect("invalid HOST/PORT");
     println!("listening on {}", addr);
     let listener = TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -122,6 +127,11 @@ async fn start_pairing(State(state): State<Arc<PairingState>>) -> impl IntoRespo
     let tx = state.channel_for(&pairing_code);
     let _ = tx.send(PairingEvent::Pending);
 
+    println!(
+        "[api] POST /api/pairing/start -> code={} session_id={}",
+        pairing_code, session_id
+    );
+
     // For QR we can embed just the pairing code; mobile app knows how to proceed
     let qr_data = format!("PAIR:{}", pairing_code);
 
@@ -146,6 +156,10 @@ async fn get_pairing_status(
     if let Some(req) = state.pending.get(&pairing_code) {
         let now = Instant::now();
         if now >= req.expires_at {
+            println!(
+                "[api] GET /pairing/status/{{{code}}} -> expired",
+                code = pairing_code
+            );
             return Json(PairingStatusResponse {
                 status: PairingStatusKind::Expired,
                 session_id: None,
@@ -170,6 +184,10 @@ async fn get_pairing_status(
             }),
         }
     } else {
+        println!(
+            "[api] GET /pairing/status/{{{code}}} -> not_found",
+            code = pairing_code
+        );
         Json(PairingStatusResponse {
             status: PairingStatusKind::Expired,
             session_id: None,
@@ -189,6 +207,11 @@ async fn ws_pairing(
 
         let tx = state.channel_for(&pairing_code);
         let mut rx = tx.subscribe();
+
+        println!(
+            "[ws] /ws/pairing/{{{code}}} connected",
+            code = pairing_code
+        );
 
         // Immediately send current state if exists
         if let Some(req) = state.pending.get(&pairing_code) {
@@ -212,6 +235,21 @@ async fn ws_pairing(
             let fut = rx.recv();
             match timeout(Duration::from_secs(180), fut).await {
                 Ok(Ok(ev)) => {
+                    // log only lightweight tag
+                    match &ev {
+                        PairingEvent::Pending => println!(
+                            "[ws] {{{code}}} -> pending",
+                            code = pairing_code
+                        ),
+                        PairingEvent::Paired { .. } => println!(
+                            "[ws] {{{code}}} -> paired",
+                            code = pairing_code
+                        ),
+                        PairingEvent::Expired => println!(
+                            "[ws] {{{code}}} -> expired",
+                            code = pairing_code
+                        ),
+                    }
                     if ws
                         .send(Message::Text(
                             serde_json::to_string(&ev).unwrap().into(),
@@ -219,10 +257,20 @@ async fn ws_pairing(
                         .await
                         .is_err()
                     {
+                        println!(
+                            "[ws] /ws/pairing/{{{code}}} closed",
+                            code = pairing_code
+                        );
                         break;
                     }
                 }
-                _ => break,
+                _ => {
+                    println!(
+                        "[ws] /ws/pairing/{{{code}}} timeout",
+                        code = pairing_code
+                    );
+                    break;
+                }
             }
         }
     })
@@ -289,6 +337,10 @@ async fn complete_pair(
             let tx = state.channel_for(&body.pairing_code);
             let _ = tx.send(PairingEvent::Expired);
             state.pending.remove(&body.pairing_code);
+            println!(
+                "[api] POST /api/pair code={code} -> expired",
+                code = body.pairing_code
+            );
             return (axum::http::StatusCode::GONE, Json(serde_json::json!({
                 "ok": false,
                 "error": "pairing_expired"
@@ -303,10 +355,21 @@ async fn complete_pair(
         let tx = state.channel_for(&body.pairing_code);
         let _ = tx.send(PairingEvent::Paired { session_id: session_id.clone(), rpc_endpoint: rpc_endpoint.clone() });
 
+        println!(
+            "[api] POST /api/pair code={code} device_id={did} -> paired session_id={sid}",
+            code = body.pairing_code,
+            did = body.device_id,
+            sid = session_id
+        );
+
         // keep entry until client consumes it (frontend may poll once)
         return Json(CompletePairResponse { ok: true, session_id, rpc_endpoint }).into_response();
     }
 
+    println!(
+        "[api] POST /api/pair code={code} -> not_found",
+        code = body.pairing_code
+    );
     (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({
         "ok": false,
         "error": "pairing_not_found"
