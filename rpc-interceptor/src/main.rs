@@ -24,6 +24,8 @@ use passkeys::{
     register_finish,
     assert_start,
     assert_finish,
+    resume_session,
+    ResumeState,
 };
 
 #[tokio::main]
@@ -64,9 +66,14 @@ async fn main() {
         .route("/api/passkeys/assert/finish", post(assert_finish))
         .with_state(passkey_state.clone());
 
+    let resume_router = Router::new()
+        .route("/api/sessions/resume", post(resume_session))
+        .with_state(Arc::new(ResumeState { passkeys: passkey_state.clone(), pairing: pairing_state.clone() }));
+
     let app = pairing_router
         .merge(rpc_router)
         .merge(passkeys_router)
+        .merge(resume_router)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

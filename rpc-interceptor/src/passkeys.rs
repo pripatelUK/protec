@@ -15,6 +15,33 @@ pub struct PasskeyState {
     pub rp_id: Arc<String>,
     pub webauthn: Arc<Webauthn>,
 }
+#[derive(Clone)]
+pub struct ResumeState {
+    pub passkeys: Arc<PasskeyState>,
+    pub pairing: Arc<crate::pairing::PairingState>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResumeReq { pub assertion_token: String }
+
+#[derive(Debug, Serialize)]
+pub struct ResumeRes { pub ok: bool, pub session_id: String, pub rpc_endpoint: String }
+
+pub async fn resume_session(State(state): State<Arc<ResumeState>>, Json(body): Json<ResumeReq>) -> impl IntoResponse {
+    let Some(dev_id) = validate_assertion_token(&state.passkeys, &body.assertion_token) else {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"ok": false, "error": "invalid_token"}))
+        ).into_response();
+    };
+
+    // Create a fresh session_id and index it so RPC accepts it.
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state.pairing.sessions.insert(session_id.clone(), "resume".to_string());
+    let rpc_endpoint = format!("http://localhost:3000/rpc/{}", session_id);
+    Json(ResumeRes { ok: true, session_id, rpc_endpoint }).into_response()
+}
+
 
 impl PasskeyState {
     pub fn new(rp_id: String, hmac_secret: String, origins: Vec<String>) -> Self {
@@ -284,6 +311,22 @@ fn extract_challenge_from_client_data_bytes(client_data_bytes: &[u8]) -> Option<
     let chal_bytes = base64::engine::general_purpose::URL_SAFE.decode(chal_b64_any).or_else(|_| URL_SAFE_NO_PAD.decode(chal_b64_any)).ok()?;
     let chal_nopad = URL_SAFE_NO_PAD.encode(chal_bytes);
     Some(chal_nopad)
+}
+
+fn validate_assertion_token(state: &PasskeyState, token: &str) -> Option<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 2 { return None; }
+    let payload_b64 = parts[0];
+    let sig_b64 = parts[1];
+    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(sig_b64).ok()?;
+    let mac = hmac_sha256(&state.hmac_secret, &payload_bytes);
+    if mac != sig { return None; }
+    let v: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    let dev = v.get("device_id")?.as_str()?.to_string();
+    let exp = v.get("exp")?.as_u64()?;
+    if now_unix() > exp { return None; }
+    Some(dev)
 }
 
 
