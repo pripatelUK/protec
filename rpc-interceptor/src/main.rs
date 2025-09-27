@@ -16,7 +16,7 @@ use pairing::{
     PairingState,
 };
 mod rpc;
-use rpc::{rpc_entry, AppState as RpcAppState, RpcConfig};
+use rpc::{rpc_entry, approve, AppState as RpcAppState, RpcConfig};
 
 #[tokio::main]
 async fn main() {
@@ -28,6 +28,7 @@ async fn main() {
         rpc: RpcConfig { upstream_url },
         http: reqwest::Client::new(),
         pairing: pairing_state.clone(),
+        approvals_by_intent: dashmap::DashMap::new(),
     });
 
     let pairing_router = Router::new()
@@ -40,6 +41,7 @@ async fn main() {
 
     let rpc_router = Router::new()
         .route("/rpc/{session_id}", post(rpc_entry))
+        .route("/api/approve/{approval_id}", post(approve))
         .with_state(rpc_state.clone());
 
     let app = pairing_router

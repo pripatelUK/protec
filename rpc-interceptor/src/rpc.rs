@@ -1,6 +1,7 @@
 use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
 use reqwest::Client;
 use serde_json::Value;
+use serde::Serialize;
 use std::sync::Arc;
 use crate::pairing::PairingState;
 use dashmap::DashMap;
@@ -23,17 +24,17 @@ pub struct AppState {
     pub approvals_by_intent: DashMap<String, ApprovalRequest>, // (session_id|intent_key) -> approval
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum ApprovalStatus { Pending, Approved, Denied, Expired }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ApprovalRequest {
     pub id: String,
     pub session_id: String,
     pub method: String,
     pub original_params: Value,
-    pub created_at: Instant,
-    pub expires_at: Instant,
+    #[serde(skip_serializing)] pub created_at: Instant,
+    #[serde(skip_serializing)] pub expires_at: Instant,
     pub status: ApprovalStatus,
 }
 
@@ -63,17 +64,23 @@ pub async fn rpc_entry(
                 .map(|cid| canonicalize_estimate_params(body.get("params"), cid))
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let appr = ApprovalRequest {
-                id: Uuid::new_v4().to_string(),
-                session_id: session_id.clone(),
-                method: method.to_string(),
-                original_params: body.get("params").cloned().unwrap_or(Value::Null),
-                created_at: Instant::now(),
-                expires_at: Instant::now() + Duration::from_secs(120),
-                status: ApprovalStatus::Pending,
-            };
             let key = format!("{}|{}", session_id, intent_key);
-            app.approvals_by_intent.insert(key, appr);
+            if let Some(mut existing) = app.approvals_by_intent.get_mut(&key) {
+                // Refresh existing without resetting status/id; keep approvals stable across repeated estimates
+                existing.original_params = body.get("params").cloned().unwrap_or(Value::Null);
+                existing.expires_at = Instant::now() + Duration::from_secs(120);
+            } else {
+                let appr = ApprovalRequest {
+                    id: Uuid::new_v4().to_string(),
+                    session_id: session_id.clone(),
+                    method: method.to_string(),
+                    original_params: body.get("params").cloned().unwrap_or(Value::Null),
+                    created_at: Instant::now(),
+                    expires_at: Instant::now() + Duration::from_secs(120),
+                    status: ApprovalStatus::Pending,
+                };
+                app.approvals_by_intent.insert(key, appr);
+            }
             // pass-through
         }
         // Final gate: require approved
@@ -120,6 +127,9 @@ pub async fn rpc_entry(
                             "error": {"code": -32001, "message": "Mobile approval required", "data": {"approval_id": entry.id, "status": "Pending"}}
                         });
                         return (StatusCode::OK, Json(resp)).into_response();
+                    }
+                    ApprovalStatus::Approved if not_expired => {
+                        // pass-through immediately
                     }
                     ApprovalStatus::Denied if not_expired => {
                         let id_val = body.get("id").cloned().unwrap_or(Value::Null);
@@ -170,6 +180,35 @@ pub async fn rpc_entry(
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct ApproveRes { pub ok: bool }
+
+// Flip approval to Approved by approval_id
+pub async fn approve(
+    State(app): State<Arc<AppState>>,
+    Path(approval_id): Path<String>,
+) -> impl IntoResponse {
+    // Find the key for this approval id
+    let mut target_key: Option<String> = None;
+    for kv in app.approvals_by_intent.iter() {
+        if kv.value().id == approval_id {
+            target_key = Some(kv.key().clone());
+            break;
+        }
+    }
+    if let Some(k) = target_key {
+        if let Some(mut v) = app.approvals_by_intent.get_mut(&k) {
+            v.status = ApprovalStatus::Approved;
+            return Json(ApproveRes { ok: true }).into_response();
+        }
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"ok": false, "error": "approval_not_found"})),
+    )
+        .into_response()
+}
+
 async fn fetch_chain_id(app: &Arc<AppState>) -> Option<String> {
     let payload = serde_json::json!({
         "jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]
@@ -184,19 +223,19 @@ async fn fetch_chain_id(app: &Arc<AppState>) -> Option<String> {
 
 fn canonicalize_estimate_params(params: Option<&Value>, chain_id_hex: &str) -> String {
     let cid = chain_id_hex.to_lowercase();
-    let mut from="".to_string();
-    let mut to="".to_string();
-    let mut value="".to_string();
-    let mut data="".to_string();
+    let mut to = String::new();
+    let mut value = String::new();
+    let mut data = String::new();
     if let Some(Value::Array(arr)) = params {
         if let Some(Value::Object(obj)) = arr.get(0) {
-            from = obj.get("from").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
             to = obj.get("to").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
             value = obj.get("value").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
             data = obj.get("data").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
         }
     }
-    format!("{}|{}|{}|{}|{}", cid, from, to, value, data)
+    let canonical = format!("{}|{}|{}|{}", cid, to, value, data);
+    let hash = keccak256(canonical.as_bytes());
+    format!("0x{}", hex::encode(hash))
 }
 
 fn canonicalize_send_raw_params_alloy(params: Option<&Value>, chain_id_hex: &str) -> Option<String> {
