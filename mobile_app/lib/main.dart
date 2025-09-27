@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 void main() {
   runApp(const App());
@@ -116,6 +117,20 @@ class _PairingScreenState extends State<PairingScreen> {
               autocorrect: false,
               decoration: const InputDecoration(hintText: 'Enter 6-digit code'),
             ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final code = await Navigator.of(context).push<String>(
+                  MaterialPageRoute(builder: (_) => const QrScanPage()),
+                );
+                if (code != null && code.isNotEmpty && mounted) {
+                  pairingCodeController.text = code.toLowerCase();
+                  await completePairing();
+                }
+              },
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scan QR'),
+            ),
             const SizedBox(height: 12),
             const Text('Device ID', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             TextField(
@@ -152,6 +167,37 @@ class ApprovalScreen extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class QrScanPage extends StatefulWidget {
+  const QrScanPage({super.key});
+
+  @override
+  State<QrScanPage> createState() => _QrScanPageState();
+}
+
+class _QrScanPageState extends State<QrScanPage> {
+  bool _handled = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Scan Pairing QR')),
+      body: MobileScanner(
+        onDetect: (capture) {
+          if (_handled) return;
+          final codes = capture.barcodes;
+          if (codes.isEmpty) return;
+          final raw = codes.first.rawValue ?? '';
+          if (raw.isEmpty) return;
+          _handled = true;
+          // Expected format: PAIR:<code>
+          final code = raw.startsWith('PAIR:') ? raw.substring(5) : raw;
+          Navigator.of(context).pop(code);
+        },
       ),
     );
   }
