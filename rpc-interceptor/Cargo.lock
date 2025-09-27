@@ -786,7 +786,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mobile-approval-interceptor"
+name = "rpc-interceptor"
 version = "0.1.0"
 dependencies = [
  "axum",
