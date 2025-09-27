@@ -98,9 +98,13 @@ class _AuthScreenState extends State<AuthScreen> {
       final options = jsonDecode(startRes.body) as Map<String, dynamic>;
       final pk = (options['publicKey'] as Map<String, dynamic>?) ?? options;
       final rp = pk['rp'] as Map<String, dynamic>?;
+      final userMap = pk['user'] as Map<String, dynamic>?;
       final challenge = pk['challenge'] as String;
+      debugPrint('server.register publicKey.rp.id=${rp?['id']} - ${rp?['name']} challenge.len=${challenge.length}');
 
-      final userId = base64Url.encode(utf8.encode(email));
+      final userId = (userMap?['id'] as String?) ?? base64Url.encode(utf8.encode(email));
+      final userName = (userMap?['name'] as String?) ?? email;
+      final userDisplay = (userMap?['displayName'] as String?) ?? email;
       final req = RegisterRequestType(
         challenge: challenge,
         relyingParty: RelyingPartyType(
@@ -108,16 +112,19 @@ class _AuthScreenState extends State<AuthScreen> {
           id: (rp?['id'] as String?) ?? _apiBaseHost,
         ),
         user: UserType(
-          displayName: email,
-          name: email,
+          displayName: userDisplay,
+          name: userName,
           id: userId,
         ),
         excludeCredentials: const [],
-        pubKeyCredParams: null,
+        // ES256 to satisfy passkeys_android expectations
+        pubKeyCredParams: [
+          PubKeyCredParamType(type: 'public-key', alg: -7),
+        ],
         timeout: 60000,
         attestation: 'none',
       );
-
+      debugPrint('passkeys.register -> rp.id=${req.relyingParty.id} rp.name=${req.relyingParty.name} user.name=$email user.id.len=${userId.length} challenge.len=${req.challenge.length}');
       final reg = await _auth.register(req);
 
       final finishRes = await http
@@ -167,6 +174,7 @@ class _AuthScreenState extends State<AuthScreen> {
       final pk = (requestOptions['publicKey'] as Map<String, dynamic>?) ?? requestOptions;
       final rpId = pk['rpId'] as String;
       final challenge = pk['challenge'] as String;
+      debugPrint('server.assert publicKey.rpId=$rpId challenge.len=${challenge.length} allow.len=${(pk['allowCredentials'] as List<dynamic>? ?? []).length}');
       final allow = (pk['allowCredentials'] as List<dynamic>? ?? [])
           .map((e) => e as Map<String, dynamic>)
           .map((m) => CredentialType(type: 'public-key', id: m['id'] as String, transports: const []))
@@ -182,6 +190,7 @@ class _AuthScreenState extends State<AuthScreen> {
         allowCredentials: allow.isEmpty ? null : allow,
       );
 
+      debugPrint('passkeys.assert -> rpId=$rpId challenge.len=${challenge.length} allow=${allow.length}');
       final assertion = await _auth.authenticate(authReq);
 
       final finishRes = await http

@@ -84,7 +84,11 @@ pub enum ChallengeKind { Register, Assert }
 // -------- Register Start --------
 
 #[derive(Debug, Deserialize)]
-pub struct RegisterStartReq { pub device_id: String, pub display_name: String }
+pub struct RegisterStartReq {
+    pub device_id: Option<String>,
+    pub email: Option<String>,
+    pub display_name: String,
+}
 
 #[derive(Debug, Serialize)]
 pub struct PublicKeyCredentialCreationOptions {
@@ -97,11 +101,18 @@ pub struct PublicKeyCredentialCreationOptions {
 }
 
 pub async fn register_start(State(state): State<Arc<PasskeyState>>, Json(body): Json<RegisterStartReq>) -> impl IntoResponse {
+    let principal = if let Some(e) = body.email.clone() { e }
+        else if let Some(d) = body.device_id.clone() { d } else {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"ok": false, "error": "missing_identifier"}))
+            ).into_response();
+        };
     let user_unique_id = Uuid::new_v4();
     let (ccr, reg_state) = state.webauthn
         .start_passkey_registration(
             user_unique_id,
-            &body.device_id,
+            &principal,
             &body.display_name,
             None,
         )
@@ -109,7 +120,7 @@ pub async fn register_start(State(state): State<Arc<PasskeyState>>, Json(body): 
 
     let chal_str = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(ccr.public_key.challenge.as_ref());
     state.challenges.insert(chal_str.clone(), PendingChallenge {
-        device_id: body.device_id.clone(),
+        device_id: principal.clone(),
         created_at: Instant::now(),
         kind: ChallengeKind::Register,
         expires_at: Instant::now() + Duration::from_secs(120),
@@ -118,14 +129,48 @@ pub async fn register_start(State(state): State<Arc<PasskeyState>>, Json(body): 
         auth_state: None,
     });
 
-    Json(ccr).into_response()
+    // Force ES256 only to avoid Android TYPE_NOT_SUPPORTED_ERROR
+    let mut v = serde_json::to_value(&ccr).unwrap_or_else(|_| serde_json::json!({}));
+    {
+        // helper to set pubKeyCredParams
+        fn set_es256(target: &mut serde_json::Value) {
+            *target
+                .as_object_mut()
+                .unwrap()
+                .entry("pubKeyCredParams")
+                .or_insert(serde_json::json!([])) = serde_json::json!([
+                {"type":"public-key","alg":-7}
+            ]);
+        }
+        if let Some(pk) = v.get_mut("publicKey") {
+            set_es256(pk);
+        } else if v.is_object() {
+            set_es256(&mut v);
+        }
+    }
+    if let Some(pk) = v.get("publicKey") {
+        let rp = pk.get("rp").cloned().unwrap_or(serde_json::json!({}));
+        let rp_id_dbg = rp.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let rp_name_dbg = rp.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let user = pk.get("user").cloned().unwrap_or(serde_json::json!({}));
+        let user_name_dbg = user.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let user_id_len = user.get("id").and_then(|v| v.as_str()).map(|s| s.len()).unwrap_or(0);
+        let chal_len = pk.get("challenge").and_then(|c| c.as_str()).map(|s| s.len()).unwrap_or(0);
+        let params = pk.get("pubKeyCredParams").cloned().unwrap_or(serde_json::json!([]));
+        println!(
+            "[register_start] rp_id={} rp_name={} user_name={} user_id_len={} challenge_len={} algs={}",
+            rp_id_dbg, rp_name_dbg, user_name_dbg, user_id_len, chal_len, params
+        );
+    }
+    Json(v).into_response()
 }
 
 // -------- Register Finish --------
 
 #[derive(Debug, Deserialize)]
 pub struct RegisterFinishReq {
-    pub device_id: String,
+    pub device_id: Option<String>,
+    pub email: Option<String>,
     pub id: String,
     pub rawId: String,
     #[serde(rename = "type")] pub typ: String,
@@ -154,7 +199,8 @@ pub async fn register_finish(State(state): State<Arc<PasskeyState>>, Json(body):
             Json(serde_json::json!({"ok": false, "error": "challenge_not_found"}))
         ).into_response();
     };
-    if pend.kind != ChallengeKind::Register || pend.device_id != body.device_id || Instant::now() >= pend.expires_at {
+    let principal = body.email.clone().or(body.device_id.clone());
+    if pend.kind != ChallengeKind::Register || Instant::now() >= pend.expires_at || principal.as_deref() != Some(pend.device_id.as_str()) {
         return (
             axum::http::StatusCode::GONE,
             Json(serde_json::json!({"ok": false, "error": "challenge_invalid_or_expired"}))
@@ -171,17 +217,18 @@ pub async fn register_finish(State(state): State<Arc<PasskeyState>>, Json(body):
         ).into_response();
     }
     let passkey = res.unwrap();
-    let mut vec = state.passkeys_by_device.get(&body.device_id).map(|v| v.clone()).unwrap_or_default();
+    let principal = principal.expect("validated above");
+    let mut vec = state.passkeys_by_device.get(&principal).map(|v| v.clone()).unwrap_or_default();
     vec.retain(|pk| pk.cred_id() != passkey.cred_id());
     vec.push(passkey);
-    state.passkeys_by_device.insert(body.device_id.clone(), vec);
+    state.passkeys_by_device.insert(principal, vec);
     Json(SimpleOk { ok: true }).into_response()
 }
 
 // -------- Assert Start --------
 
 #[derive(Debug, Deserialize)]
-pub struct AssertStartReq { pub device_id: String }
+pub struct AssertStartReq { pub device_id: Option<String>, pub email: Option<String> }
 
 #[derive(Debug, Serialize)]
 pub struct PublicKeyCredentialRequestOptions {
@@ -193,20 +240,34 @@ pub struct PublicKeyCredentialRequestOptions {
 }
 
 pub async fn assert_start(State(state): State<Arc<PasskeyState>>, Json(body): Json<AssertStartReq>) -> impl IntoResponse {
-    let Some(pks) = state.passkeys_by_device.get(&body.device_id) else {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error":"no_credential"}))
-        ).into_response();
+    let principal = body.email.clone().or(body.device_id.clone());
+    let (car, auth_state, pend_device_id) = if let Some(id) = principal.clone() {
+        let Some(pks) = state.passkeys_by_device.get(&id) else {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error":"no_credential"}))
+            ).into_response();
+        };
+        let passkeys: Vec<Passkey> = pks.clone();
+        let (car, auth_state) = state.webauthn
+            .start_passkey_authentication(&passkeys)
+            .expect("start auth");
+        (car, auth_state, id)
+    } else {
+        // Discoverable/usernameless: aggregate all known passkeys as allow list
+        let mut all: Vec<Passkey> = Vec::new();
+        for entry in state.passkeys_by_device.iter() {
+            all.extend(entry.value().iter().cloned());
+        }
+        let (car, auth_state) = state.webauthn
+            .start_passkey_authentication(&all)
+            .expect("start discoverable auth");
+        (car, auth_state, String::new())
     };
-    let passkeys: Vec<Passkey> = pks.clone();
-    let (car, auth_state) = state.webauthn
-        .start_passkey_authentication(&passkeys)
-        .expect("start auth");
 
     let chal_str = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(car.public_key.challenge.as_ref());
     state.challenges.insert(chal_str.clone(), PendingChallenge {
-        device_id: body.device_id.clone(),
+        device_id: pend_device_id,
         created_at: Instant::now(),
         kind: ChallengeKind::Assert,
         expires_at: Instant::now() + Duration::from_secs(120),
@@ -215,14 +276,30 @@ pub async fn assert_start(State(state): State<Arc<PasskeyState>>, Json(body): Js
         auth_state: Some(auth_state),
     });
 
-    Json(car).into_response()
+    // Ensure request challenges prefer ES256
+    let mut v = serde_json::to_value(&car).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(pk) = v.get_mut("publicKey") {
+        pk.as_object_mut().unwrap().insert(
+            "pubKeyCredParams".to_string(),
+            serde_json::json!([{ "type": "public-key", "alg": -7 }]),
+        );
+    }
+    if let Some(pk) = v.get("publicKey") {
+        let rp_id_dbg = pk.get("rpId").cloned().unwrap_or(serde_json::json!("?"));
+        let chal_len = pk.get("challenge").and_then(|c| c.as_str()).map(|s| s.len()).unwrap_or(0);
+        let allow_len = pk.get("allowCredentials").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0);
+        let params = pk.get("pubKeyCredParams").cloned().unwrap_or(serde_json::json!([]));
+        println!("[assert_start] rp_id={} challenge_len={} allow_len={} algs={}", rp_id_dbg, chal_len, allow_len, params);
+    }
+    Json(v).into_response()
 }
 
 // -------- Assert Finish --------
 
 #[derive(Debug, Deserialize)]
 pub struct AssertFinishReq {
-    pub device_id: String,
+    pub device_id: Option<String>,
+    pub email: Option<String>,
     pub id: String,
     pub rawId: String,
     #[serde(rename = "type")] pub typ: String,
@@ -251,7 +328,8 @@ pub async fn assert_finish(State(state): State<Arc<PasskeyState>>, Json(body): J
             Json(serde_json::json!({"ok": false, "error": "challenge_not_found"}))
         ).into_response();
     };
-    if pend.kind != ChallengeKind::Assert || pend.device_id != body.device_id || Instant::now() >= pend.expires_at {
+    let principal = body.email.clone().or(body.device_id.clone());
+    if pend.kind != ChallengeKind::Assert || Instant::now() >= pend.expires_at || (!pend.device_id.is_empty() && principal.as_deref() != Some(pend.device_id.as_str())) {
         return (
             axum::http::StatusCode::GONE,
             Json(serde_json::json!({"ok": false, "error": "challenge_invalid_or_expired"}))
@@ -270,10 +348,34 @@ pub async fn assert_finish(State(state): State<Arc<PasskeyState>>, Json(body): J
     }
 
     // Update credential counters if needed
+    let mut owner_id: Option<String> = None;
     if let Ok(resu) = auth_res {
-        if let Some(mut vec) = state.passkeys_by_device.get_mut(&body.device_id) {
-            for pk in vec.iter_mut() {
-                let _ = pk.update_credential(&resu);
+        // Update match owner if known
+        if let Some(id) = principal.clone() {
+            if let Some(mut vec) = state.passkeys_by_device.get_mut(&id) {
+                for pk in vec.iter_mut() {
+                    let _ = pk.update_credential(&resu);
+                }
+                owner_id = Some(id);
+            }
+        } else {
+            // Discover owner by credential id
+            let cred = resu.cred_id();
+            for entry in state.passkeys_by_device.iter() {
+                let key = entry.key().clone();
+                let mut vec = entry.value().clone();
+                let mut updated = false;
+                for pk in vec.iter_mut() {
+                    if pk.cred_id() == cred {
+                        let _ = pk.update_credential(&resu);
+                        updated = true;
+                    }
+                }
+                if updated {
+                    state.passkeys_by_device.insert(key.clone(), vec);
+                    owner_id = Some(key);
+                    break;
+                }
             }
         }
     }
@@ -281,7 +383,7 @@ pub async fn assert_finish(State(state): State<Arc<PasskeyState>>, Json(body): J
     let iat = now_unix();
     let exp = iat + 120;
     let payload = serde_json::json!({
-        "device_id": body.device_id,
+        "device_id": owner_id.unwrap_or_else(|| principal.unwrap_or_default()),
         "challenge": chal,
         "iat": iat,
         "exp": exp,
