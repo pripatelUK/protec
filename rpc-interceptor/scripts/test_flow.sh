@@ -57,6 +57,23 @@ $CURL_BIN -sS -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}' \
   "$RPC_URL" | $JQ_BIN .
 
+log "Preview intent: eth_estimateGas (creates Pending approval; upstream may error, which is fine)"
+$CURL_BIN -sS -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":10,"method":"eth_estimateGas","params":[{"from":"0x0000000000000000000000000000000000000001","to":"0x0000000000000000000000000000000000000002","value":"0x0","data":"0x"}]}' \
+  "$RPC_URL" | $JQ_BIN .
+
+log "Final gate: eth_sendRawTransaction (intent likely mismatched; expect approval error or not-found)"
+SEND_RES=$($CURL_BIN -sS -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":11,"method":"eth_sendRawTransaction","params":["0x01"]}' \
+  "$RPC_URL")
+echo "$SEND_RES" | $JQ_BIN .
+CODE=$(echo "$SEND_RES" | $JQ_BIN -r '.error.code // empty')
+if [[ -n "$CODE" ]]; then
+  log "Gate responded with error code: $CODE (expected -32001 approval required if intents match, or -32004 no approval if not)"
+else
+  log "Gate forwarded upstream (no gating applied)"
+fi
+
 log "RPC invalid session must be rejected (401)"
 INVALID_URL="$BASE_URL/rpc/invalid-session-id"
 HTTP_CODE=$($CURL_BIN -sS -o /dev/null -w "%{http_code}" -H 'Content-Type: application/json' \
