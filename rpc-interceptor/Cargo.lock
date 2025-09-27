@@ -786,22 +786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpc-interceptor"
-version = "0.1.0"
-dependencies = [
- "axum",
- "dashmap",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "tower",
- "tower-http",
- "uuid",
-]
-
-[[package]]
 name = "native-tls"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1056,6 +1040,22 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rpc-interceptor"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "dashmap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tower",
+ "tower-http",
+ "uuid",
 ]
 
 [[package]]
