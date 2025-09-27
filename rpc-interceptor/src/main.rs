@@ -17,11 +17,24 @@ use pairing::{
 };
 mod rpc;
 use rpc::{rpc_entry, approve, AppState as RpcAppState, RpcConfig};
+mod passkeys;
+use passkeys::{
+    PasskeyState,
+    register_start,
+    register_finish,
+    assert_start,
+    assert_finish,
+};
 
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
     let pairing_state = Arc::new(PairingState::new());
+    let rp_id = std::env::var("RP_ID").unwrap_or_else(|_| "localhost".to_string());
+    let hmac_secret = std::env::var("PASSKEY_HMAC_SECRET").unwrap_or_else(|_| "dev-secret".to_string());
+    let origins = std::env::var("RP_ORIGINS").unwrap_or_else(|_| "http://localhost:3000".to_string());
+    let origin_list: Vec<String> = origins.split(',').map(|s| s.trim().to_string()).collect();
+    let passkey_state = Arc::new(PasskeyState::new(rp_id, hmac_secret, origin_list));
     let upstream_url = std::env::var("RPC_PROVIDER_URL").unwrap_or_else(|_| "https://eth.llamarpc.com".to_string());
     println!("RPC upstream_url={}", upstream_url);
     let rpc_state = Arc::new(RpcAppState {
@@ -44,8 +57,16 @@ async fn main() {
         .route("/api/approve/{approval_id}", post(approve))
         .with_state(rpc_state.clone());
 
+    let passkeys_router = Router::new()
+        .route("/api/passkeys/register/start", post(register_start))
+        .route("/api/passkeys/register/finish", post(register_finish))
+        .route("/api/passkeys/assert/start", post(assert_start))
+        .route("/api/passkeys/assert/finish", post(assert_finish))
+        .with_state(passkey_state.clone());
+
     let app = pairing_router
         .merge(rpc_router)
+        .merge(passkeys_router)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
