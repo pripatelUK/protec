@@ -267,6 +267,11 @@ impl TenderlySimulator {
         Ok(sim)
     }
 
+    /// Returns the most recent raw Tenderly response captured by simulate/set calls.
+    pub fn last_result(&self) -> Option<SimulationResult> {
+        self.last_simulation.clone()
+    }
+
     fn get_simulation_summary_from(
         &self,
         sim: &SimulationResult,

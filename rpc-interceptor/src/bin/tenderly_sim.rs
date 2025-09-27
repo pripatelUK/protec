@@ -103,14 +103,28 @@ async fn main() {
     let out_path = env::var("OUTPUT_FILE").unwrap_or_else(|_| "tenderly_output.txt".to_string());
     match simulator.simulate_transaction(&tx, None).await {
         Ok(res) => {
-            let payload = serde_json::json!({
-                "uuid": res.summary.uuid,
-                "reverted": res.summary.reverted,
-                "gas_used": res.summary.gas_used,
-                "error_message": res.summary.error_message,
-                "gas_limit": res.tx.gas_limit,
+            let full = serde_json::json!({
+                "summary": {
+                    "uuid": res.summary.uuid,
+                    "reverted": res.summary.reverted,
+                    "gas_used": res.summary.gas_used,
+                    "error_message": res.summary.error_message,
+                    "gas_limit": res.tx.gas_limit,
+                },
+                "tx": {
+                    "from": res.tx.from,
+                    "to": res.tx.to,
+                    "data": res.tx.data,
+                    "gas": res.tx.gas,
+                    "gas_price": res.tx.gas_price,
+                    "value": res.tx.value,
+                    "max_fee_per_gas": res.tx.max_fee_per_gas,
+                    "max_priority_fee_per_gas": res.tx.max_priority_fee_per_gas,
+                    "gas_limit": res.tx.gas_limit,
+                },
+                "tenderly": simulator.last_result(),
             });
-            let body = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+            let body = serde_json::to_string_pretty(&full).unwrap_or_else(|_| full.to_string());
             if let Err(err) = fs::write(&out_path, body) {
                 eprintln!("failed to write {}: {}", out_path, err);
                 std::process::exit(1);
