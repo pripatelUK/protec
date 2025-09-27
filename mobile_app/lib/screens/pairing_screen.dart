@@ -314,7 +314,7 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('🔐 Transaction Approver')),
+      appBar: AppBar(title: const Text('Pair your device')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: ListView(

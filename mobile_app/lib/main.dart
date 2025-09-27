@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'screens/auth_screen.dart';
 import 'screens/pairing_screen.dart';
 import 'screens/approval_screen.dart';
 
@@ -18,8 +18,11 @@ class App extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
-      home: const PairingScreen(),
-      routes: {'/approvals': (_) => const ApprovalScreen()},
+      home: const AuthScreen(),
+      routes: {
+        '/pair': (_) => const PairingScreen(),
+        '/approvals': (_) => const ApprovalScreen(),
+      },
     );
   }
 }
