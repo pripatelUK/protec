@@ -4,6 +4,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum::http::Method;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,6 +15,7 @@ use std::{
 use tokio::net::TcpListener;
 use tokio::{sync::broadcast, time::timeout};
 use uuid::Uuid;
+use tower_http::cors::CorsLayer;
 
 #[tokio::main]
 async fn main() {
@@ -25,7 +27,12 @@ async fn main() {
         .route("/api/pairing/start", post(start_pairing))
         .route("/pairing/status/{pairing_code}", get(get_pairing_status))
         .route("/ws/pairing/{pairing_code}", get(ws_pairing))
-        .with_state(pairing_state);
+        .route("/api/pair", post(complete_pair))
+        .with_state(pairing_state)
+        .layer(
+            CorsLayer::permissive()
+                .allow_methods([Method::GET, Method::POST])
+        );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("listening on {}", addr);
@@ -254,4 +261,54 @@ fn rand_u64() -> u64 {
         v = (v << 8) ^ x as u64;
     }
     v
+}
+
+// ===== Complete Pairing =====
+
+#[derive(Debug, Deserialize)]
+struct CompletePairRequest {
+    pairing_code: String,
+    device_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CompletePairResponse {
+    ok: bool,
+    session_id: String,
+    rpc_endpoint: String,
+}
+
+async fn complete_pair(
+    State(state): State<Arc<PairingState>>,
+    Json(body): Json<CompletePairRequest>,
+) -> impl IntoResponse {
+    if let Some(mut entry) = state.pending.get_mut(&body.pairing_code) {
+        // expire check
+        if Instant::now() >= entry.expires_at {
+            // broadcast expired and drop
+            let tx = state.channel_for(&body.pairing_code);
+            let _ = tx.send(PairingEvent::Expired);
+            state.pending.remove(&body.pairing_code);
+            return (axum::http::StatusCode::GONE, Json(serde_json::json!({
+                "ok": false,
+                "error": "pairing_expired"
+            }))).into_response();
+        }
+
+        entry.status = PairingStatusKind::Paired;
+        let session_id = entry.session_id.clone();
+        let rpc_endpoint = format!("http://localhost:3000/rpc/{}", session_id);
+
+        // notify ws subscribers
+        let tx = state.channel_for(&body.pairing_code);
+        let _ = tx.send(PairingEvent::Paired { session_id: session_id.clone(), rpc_endpoint: rpc_endpoint.clone() });
+
+        // keep entry until client consumes it (frontend may poll once)
+        return Json(CompletePairResponse { ok: true, session_id, rpc_endpoint }).into_response();
+    }
+
+    (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({
+        "ok": false,
+        "error": "pairing_not_found"
+    }))).into_response()
 }
