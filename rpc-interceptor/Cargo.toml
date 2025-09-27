@@ -14,3 +14,4 @@ dashmap = "6.1"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 tokio-tungstenite = "0.26"
+dotenvy = "0.15"

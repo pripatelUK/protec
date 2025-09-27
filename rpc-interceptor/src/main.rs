@@ -15,19 +15,34 @@ use pairing::{
     ws_pairing,
     PairingState,
 };
+mod rpc;
+use rpc::{rpc_entry, AppState as RpcAppState, RpcConfig};
 
 #[tokio::main]
 async fn main() {
+    let _ = dotenvy::dotenv();
     let pairing_state = Arc::new(PairingState::new());
+    let upstream_url = std::env::var("RPC_PROVIDER_URL").unwrap_or_else(|_| "https://eth.llamarpc.com".to_string());
+    println!("RPC upstream_url={}", upstream_url);
+    let rpc_state = Arc::new(RpcAppState {
+        rpc: RpcConfig { upstream_url },
+        http: reqwest::Client::new(),
+    });
 
-    let app = Router::new()
+    let pairing_router = Router::new()
         .route("/health", get(health))
-        // Phase 1 pairing APIs
         .route("/api/pairing/start", post(start_pairing))
         .route("/pairing/status/{pairing_code}", get(get_pairing_status))
         .route("/ws/pairing/{pairing_code}", get(ws_pairing))
         .route("/api/pair", post(complete_pair))
-        .with_state(pairing_state)
+        .with_state(pairing_state.clone());
+
+    let rpc_router = Router::new()
+        .route("/rpc/{session_id}", post(rpc_entry))
+        .with_state(rpc_state.clone());
+
+    let app = pairing_router
+        .merge(rpc_router)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
