@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:io' show Platform;
 
 void main() {
   runApp(const App());
@@ -23,8 +26,77 @@ class App extends StatelessWidget {
   }
 }
 
-class PairingScreen extends StatelessWidget {
+class PairingScreen extends StatefulWidget {
   const PairingScreen({super.key});
+
+  @override
+  State<PairingScreen> createState() => _PairingScreenState();
+}
+
+class _PairingScreenState extends State<PairingScreen> {
+  final TextEditingController pairingCodeController = TextEditingController();
+  final TextEditingController deviceIdController = TextEditingController(text: 'device-${DateTime.now().millisecondsSinceEpoch}');
+  bool isSubmitting = false;
+  
+
+  Future<void> completePairing() async {
+    setState(() {
+      isSubmitting = true;
+      
+    });
+    try {
+      final code = pairingCodeController.text.trim().toLowerCase();
+      final deviceId = deviceIdController.text.trim();
+      if (code.isEmpty || deviceId.isEmpty) {
+        await _showAlert('Missing info', 'Enter pairing code and device id');
+        return;
+      }
+      final host = (Platform.isAndroid ? '127.0.0.1' : '127.0.0.1');
+      final uri = Uri.parse('http://$host:3000/api/pair');
+      final body = jsonEncode({'pairing_code': code, 'device_id': deviceId});
+      final res = await http
+          .post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: body,
+      )
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        final j = jsonDecode(res.body) as Map<String, dynamic>;
+        if (j['ok'] == true) {
+          await _showAlert('Paired', 'Session: ${j['session_id']}');
+          if (!mounted) return;
+          Navigator.of(context).pushNamed('/approvals');
+        } else {
+          await _showAlert('Pairing failed', '${j['error']}');
+        }
+      } else if (res.statusCode == 410) {
+        await _showAlert('Expired', 'Pairing expired. Start again.');
+      } else if (res.statusCode == 404) {
+        await _showAlert('Not found', 'Pairing not found. Check the code or restart.');
+      } else {
+        await _showAlert('Error', 'Unexpected error (${res.statusCode})');
+      }
+    } catch (e) {
+      await _showAlert('Network error', '$e');
+    } finally {
+      setState(() => isSubmitting = false);
+    }
+  }
+
+  Future<void> _showAlert(String title, String message) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -32,18 +104,28 @@ class PairingScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('🔐 Transaction Approver')),
       body: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
           children: [
             const Text('Enter Pairing Code', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            const TextField(maxLength: 6, keyboardType: TextInputType.number, decoration: InputDecoration(hintText: 'Enter 6-digit code')),
+            TextField(
+              controller: pairingCodeController,
+              maxLength: 6,
+              keyboardType: TextInputType.text,
+              textCapitalization: TextCapitalization.none,
+              autocorrect: false,
+              decoration: const InputDecoration(hintText: 'Enter 6-digit code'),
+            ),
+            const SizedBox(height: 12),
+            const Text('Device ID', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            TextField(
+              controller: deviceIdController,
+              decoration: const InputDecoration(hintText: 'e.g., iPhone-13'),
+            ),
             const SizedBox(height: 12),
             ElevatedButton(
-              onPressed: () {
-                Navigator.of(context).pushNamed('/approvals');
-              },
-              child: const Text('Connect Device'),
+              onPressed: isSubmitting ? null : completePairing,
+              child: Text(isSubmitting ? 'Connecting…' : 'Connect Device'),
             ),
           ],
         ),

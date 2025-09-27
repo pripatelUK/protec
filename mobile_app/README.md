@@ -1,16 +1,20 @@
-# mobile_app
+# Mobile App
 
-A new Flutter project.
+Minimal Flutter client for pairing with the backend.
 
-## Getting Started
+## Local Development Notes
 
-This project is a starting point for a Flutter application.
+- Backend must listen on `0.0.0.0:3000` (already configured).
+- When testing on a real Android device via USB, use adb reverse to route the phone’s `127.0.0.1:3000` to your host:
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+adb reverse tcp:3000 tcp:3000
+```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- In the app, use `127.0.0.1` as the server host. Example POST (from app logs):
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```
+POST http://127.0.0.1:3000/api/pair
+```
+
+- If testing over Wi‑Fi (no USB), ensure the phone and Mac share the same network, firewall allows inbound 3000, and use the Mac’s LAN IP, e.g. `http://192.168.x.x:3000/health`.
