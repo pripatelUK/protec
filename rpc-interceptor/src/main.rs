@@ -160,6 +160,11 @@ async fn get_pairing_status(
                 "[api] GET /pairing/status/{{{code}}} -> expired",
                 code = pairing_code
             );
+            // notify listeners and clean up expired entry
+            let tx = state.channel_for(&pairing_code);
+            let _ = tx.send(PairingEvent::Expired);
+            drop(req);
+            state.pending.remove(&pairing_code);
             return Json(PairingStatusResponse {
                 status: PairingStatusKind::Expired,
                 session_id: None,
@@ -330,16 +335,17 @@ async fn complete_pair(
     State(state): State<Arc<PairingState>>,
     Json(body): Json<CompletePairRequest>,
 ) -> impl IntoResponse {
-    if let Some(mut entry) = state.pending.get_mut(&body.pairing_code) {
-        // expire check
-        if Instant::now() >= entry.expires_at {
-            // broadcast expired and drop
-            let tx = state.channel_for(&body.pairing_code);
+    let code = body.pairing_code.clone();
+    if let Some(req) = state.pending.get(&code) {
+        // expire check using read lock first
+        if Instant::now() >= req.expires_at {
+            let tx = state.channel_for(&code);
             let _ = tx.send(PairingEvent::Expired);
-            state.pending.remove(&body.pairing_code);
+            drop(req);
+            state.pending.remove(&code);
             println!(
                 "[api] POST /api/pair code={code} -> expired",
-                code = body.pairing_code
+                code = code
             );
             return (axum::http::StatusCode::GONE, Json(serde_json::json!({
                 "ok": false,
@@ -347,17 +353,32 @@ async fn complete_pair(
             }))).into_response();
         }
 
-        entry.status = PairingStatusKind::Paired;
-        let session_id = entry.session_id.clone();
+        let session_id = req.session_id.clone();
+        drop(req);
+
+        // update status with a separate mutable access to avoid deadlock
+        if let Some(mut entry) = state.pending.get_mut(&code) {
+            entry.status = PairingStatusKind::Paired;
+        } else {
+            println!(
+                "[api] POST /api/pair code={code} -> not_found_after_check",
+                code = code
+            );
+            return (axum::http::StatusCode::NOT_FOUND, Json(serde_json::json!({
+                "ok": false,
+                "error": "pairing_not_found"
+            }))).into_response();
+        }
+
         let rpc_endpoint = format!("http://localhost:3000/rpc/{}", session_id);
 
         // notify ws subscribers
-        let tx = state.channel_for(&body.pairing_code);
+        let tx = state.channel_for(&code);
         let _ = tx.send(PairingEvent::Paired { session_id: session_id.clone(), rpc_endpoint: rpc_endpoint.clone() });
 
         println!(
             "[api] POST /api/pair code={code} device_id={did} -> paired session_id={sid}",
-            code = body.pairing_code,
+            code = code,
             did = body.device_id,
             sid = session_id
         );
